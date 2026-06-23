@@ -31,6 +31,7 @@
   ],
   "license": "MIT",
   "dependencies": {
+    "@connectrpc/connect-node": "^1.7.0",
     "@cursor/sdk": "^1.0.19",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "zod": "^3.25.1"

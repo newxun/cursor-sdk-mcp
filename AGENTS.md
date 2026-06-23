@@ -25,6 +25,14 @@ for the product overview, tool list, and standard commands.
   still starts and lists tools, but those tools return a clear auth error instead of throwing.
 - To actually exercise a real Cursor Agent run, set `CURSOR_API_KEY` and run `RUN_AGENT=1 npm run demo`.
 
+### Dependency gotcha (non-obvious)
+- `@cursor/sdk`'s **local agent** stack imports `@connectrpc/connect-node` at first local `acquire`,
+  but the published package does not declare it. We add `@connectrpc/connect-node` as a direct
+  dependency so `cursor_run_agent` / `cursor_follow_up` work. Keep its version aligned with the
+  installed `@connectrpc/connect`. Symptom if missing: `Cannot find package '@connectrpc/connect-node'`
+  (only `cursor_run_agent`/`cursor_follow_up` fail; `cursor_whoami`/`cursor_list_models` still work
+  because they use the cloud REST path, not the local agent stack).
+
 ### Known harmless noise
 - Importing `@cursor/sdk` loads `node:sqlite` (its default local-agent store), which prints
   `ExperimentalWarning: SQLite is an experimental feature` to stderr. This is expected and harmless.
