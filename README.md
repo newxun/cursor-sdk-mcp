@@ -2,8 +2,7 @@
 
 An [MCP](https://modelcontextprotocol.io) (Model Context Protocol) server that lets MCP clients
 such as **Claude Code** invoke the [Cursor SDK](https://cursor.com/docs/sdk/typescript) and use
-**Cursor Agent** capabilities — running a Cursor coding agent against a working directory, listing
-models, and continuing agent conversations — all as tools.
+**Cursor Agent** capabilities as tools for local and cloud coding workflows.
 
 ## What it does
 
@@ -13,11 +12,20 @@ The server speaks MCP over **stdio** and exposes these tools:
 | --- | --- |
 | `cursor_whoami` | Verify the configured Cursor API key and return the authenticated identity. |
 | `cursor_list_models` | List the Cursor models available to the account. |
-| `cursor_run_agent` | Run a Cursor Agent (local runtime) against a `cwd` with a prompt. Returns an `agentId`. |
+| `cursor_run_agent` | Compatibility alias for a local Cursor Agent run against one `cwd`. |
+| `cursor_run_local_agent` | Run a local Cursor Agent against one or more working directories with optional Cursor MCP settings, inline MCP servers, subagents, sandboxing, and auto-review. |
+| `cursor_run_cloud_agent` | Run a Cursor Cloud Agent in a Cursor-hosted or self-hosted environment, optionally cloning repos and creating PRs. |
 | `cursor_follow_up` | Continue a previous agent conversation by `agentId`. |
+| `cursor_get_agent` | Fetch agent metadata. |
+| `cursor_list_runs` | List runs for an agent. |
+| `cursor_get_run` | Fetch one run by `runId`. |
+| `cursor_cancel_run` | Cancel one run by `runId`. |
+| `cursor_list_artifacts` | List artifacts produced by an agent. |
+| `cursor_download_artifact` | Download an artifact as base64 content. |
 
-Under the hood it uses `@cursor/sdk`'s **local** runtime: the agent loop runs in this Node process
-and reads/writes files on disk, while inference runs on Cursor's hosted models.
+Under the hood it uses `@cursor/sdk`'s local and cloud runtimes. Local agents read/write files on
+disk from this Node process. Cloud agents run in Cursor-hosted or self-hosted environments and can
+use Cursor account/team MCP configuration from `cursor.com/agents`.
 
 ## Requirements
 
@@ -65,7 +73,52 @@ Or add it to your MCP client config manually:
 ```
 
 Then ask Claude Code to, for example, "use the cursor agent to refactor `src/auth.ts`", and it will
-call `cursor_run_agent`.
+call `cursor_run_local_agent` or the compatibility `cursor_run_agent`.
+
+## Local agent usage
+
+Use `cursor_run_local_agent` when the agent should work in local directories:
+
+```json
+{
+  "prompt": "Refactor src/server.ts to split schemas into src/schemas.ts and run tests.",
+  "cwd": "/absolute/path/to/repo",
+  "model": "auto",
+  "mode": "agent",
+  "settingSources": ["project", "user", "plugins"],
+  "autoReview": true
+}
+```
+
+`settingSources` controls which Cursor MCP/settings layers the local runtime loads from disk. You can
+also pass inline `mcpServers`, `agents`, and `sandboxOptions` for one-off tool wiring and safety.
+
+## Cloud agent usage
+
+Use `cursor_run_cloud_agent` when the agent should run in Cursor Cloud:
+
+```json
+{
+  "prompt": "Add tests for the auth middleware and open a PR.",
+  "repos": [{ "url": "https://github.com/your-org/your-repo", "startingRef": "main" }],
+  "model": "auto",
+  "autoCreatePR": true
+}
+```
+
+`repos` can be omitted for an empty workspace or a named cloud environment. Cloud agents can use
+inline MCP plus Cursor account/team MCP configured at `cursor.com/agents`. Use the lifecycle tools to
+inspect runs, cancel work, and fetch artifacts.
+
+## Cursor MCP and skills strategy
+
+- Local agents use inline MCP unless `settingSources` includes project, user, or plugin settings.
+- Cloud agents use inline MCP plus user/team MCP from `cursor.com/agents`.
+- OAuth MCP must already be authorized in Cursor before local reuse.
+- Cursor skills can live in `.cursor/skills/`, `.agents/skills/`, `~/.cursor/skills/`, or
+  `~/.agents/skills/`.
+- Claude Code skills are separate from this integration and are not loaded by Cursor Agent through
+  this MCP server.
 
 ## Development
 
@@ -81,7 +134,7 @@ RUN_AGENT=1 npm run demo   # additionally run a real Cursor Agent (needs CURSOR_
 ## How it's structured
 
 - `src/cursor.ts` — `CursorService` interface + `CursorSdkService` (the `@cursor/sdk` wrapper).
-- `src/server.ts` — builds the `McpServer` and registers the four tools. Decoupled from the SDK via
+- `src/server.ts` — builds the `McpServer` and registers the tools. Decoupled from the SDK via
   `CursorService` so tests can inject a fake backend.
 - `src/index.ts` — entry point; wires the real service to a `StdioServerTransport`.
 - `tests/server.test.ts` — connects an in-memory MCP client to the server and exercises every tool.
