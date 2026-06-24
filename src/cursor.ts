@@ -291,8 +291,12 @@ export class CursorSdkService implements CursorService {
     });
   }
 
+  private runtimeFor(params: QueryRunParams): "local" | "cloud" {
+    return params.runtime ?? (params.agentId.startsWith("bc-") ? "cloud" : "local");
+  }
+
   async listRuns(params: QueryRunParams): Promise<unknown> {
-    if (params.runtime === "cloud") {
+    if (this.runtimeFor(params) === "cloud") {
       return Agent.listRuns(params.agentId, {
         runtime: "cloud",
         apiKey: this.requireApiKey(),
@@ -305,7 +309,7 @@ export class CursorSdkService implements CursorService {
   }
 
   private getRunOptions(params: QueryRunParams): Parameters<typeof Agent.getRun>[1] {
-    if (params.runtime === "cloud") {
+    if (this.runtimeFor(params) === "cloud") {
       return {
         runtime: "cloud",
         agentId: params.agentId,

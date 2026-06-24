@@ -63,6 +63,15 @@ const stdioMcpServerSchema = z
   })
   .strict();
 
+const cloudStdioMcpServerSchema = z
+  .object({
+    type: z.literal("stdio").optional(),
+    command: z.string().min(1),
+    args: z.array(z.string()).optional(),
+    env: z.record(z.string()).optional(),
+  })
+  .strict();
+
 const remoteMcpServerSchema = z
   .object({
     type: z.enum(["http", "sse"]).optional(),
@@ -80,15 +89,21 @@ const remoteMcpServerSchema = z
   .strict();
 
 const mcpServerSchema = z.union([stdioMcpServerSchema, remoteMcpServerSchema]);
+const cloudMcpServerSchema = z.union([cloudStdioMcpServerSchema, remoteMcpServerSchema]);
 
-const agentDefinitionSchema = z
-  .object({
-    description: z.string().min(1),
-    prompt: z.string().min(1),
-    model: z.string().min(1).optional(),
-    mcpServers: z.array(z.union([z.string().min(1), z.record(mcpServerSchema)])).optional(),
-  })
-  .strict();
+function agentDefinitionSchemaFor(serverSchema: typeof mcpServerSchema | typeof cloudMcpServerSchema) {
+  return z
+    .object({
+      description: z.string().min(1),
+      prompt: z.string().min(1),
+      model: z.string().min(1).optional(),
+      mcpServers: z.array(z.union([z.string().min(1), z.record(serverSchema)])).optional(),
+    })
+    .strict();
+}
+
+const agentDefinitionSchema = agentDefinitionSchemaFor(mcpServerSchema);
+const cloudAgentDefinitionSchema = agentDefinitionSchemaFor(cloudMcpServerSchema);
 
 const localAgentInputSchema = {
   prompt: z.string().min(1).describe("Instruction for the Cursor Agent."),
@@ -101,8 +116,8 @@ const localAgentInputSchema = {
     .describe('Model id (e.g. "composer-2.5"). Defaults to the server default ("auto").'),
   mode: modeSchema,
   settingSources: z.array(settingSourceSchema).optional(),
-  mcpServers: z.record(mcpServerSchema).optional(),
-  agents: z.record(agentDefinitionSchema).optional(),
+  mcpServers: z.record(cloudMcpServerSchema).optional(),
+  agents: z.record(cloudAgentDefinitionSchema).optional(),
   sandboxOptions: z.object({ enabled: z.boolean() }).strict().optional(),
   autoReview: z.boolean().optional(),
   name: z.string().min(1).optional(),
@@ -145,9 +160,42 @@ const queryRunInputSchema = {
   cwd: z.string().min(1).optional(),
 };
 
+const requiredRunInputSchema = {
+  ...queryRunInputSchema,
+  runId: z.string().min(1),
+};
+
 const artifactInputSchema = {
   agentId: z.string().min(1),
 };
+
+function queryParams(params: QueryRunParams): QueryRunParams {
+  return {
+    ...params,
+    runtime: params.runtime ?? (params.agentId.startsWith("bc-") ? "cloud" : "local"),
+  };
+}
+
+function assertNoCloudMcpCwd(
+  mcpServers: Record<string, unknown> | undefined,
+  agents: Record<string, { mcpServers?: Array<string | Record<string, unknown>> }> | undefined,
+): void {
+  for (const [name, server] of Object.entries(mcpServers ?? {})) {
+    if (typeof server === "object" && server !== null && "cwd" in server) {
+      throw new Error(`Cloud MCP server "${name}" cannot include cwd.`);
+    }
+  }
+  for (const [agentName, agent] of Object.entries(agents ?? {})) {
+    for (const entry of agent.mcpServers ?? []) {
+      if (typeof entry !== "object" || entry === null) continue;
+      for (const [serverName, server] of Object.entries(entry)) {
+        if (typeof server === "object" && server !== null && "cwd" in server) {
+          throw new Error(`Cloud agent "${agentName}" MCP server "${serverName}" cannot include cwd.`);
+        }
+      }
+    }
+  }
+}
 
 export function createServer(
   service: CursorService,
@@ -253,6 +301,7 @@ export function createServer(
     },
     async (params) => {
       try {
+        assertNoCloudMcpCwd(params.mcpServers, params.agents);
         return formatRun(await service.runCloudAgent(params));
       } catch (error) {
         return errorResult(error);
@@ -296,7 +345,7 @@ export function createServer(
     },
     async ({ agentId, runId, runtime, cwd }) => {
       try {
-        const params: QueryRunParams = { agentId, runId, runtime, cwd };
+        const params = queryParams({ agentId, runId, runtime, cwd });
         return jsonResult(await service.getAgent(params));
       } catch (error) {
         return errorResult(error);
@@ -314,7 +363,7 @@ export function createServer(
     },
     async ({ agentId, runId, runtime, cwd }) => {
       try {
-        const params: QueryRunParams = { agentId, runId, runtime, cwd };
+        const params = queryParams({ agentId, runId, runtime, cwd });
         return jsonResult(await service.listRuns(params));
       } catch (error) {
         return errorResult(error);
@@ -327,12 +376,12 @@ export function createServer(
     {
       title: "Cursor: get run",
       description: "Fetch a specific Cursor Agent run by runId.",
-      inputSchema: queryRunInputSchema,
+      inputSchema: requiredRunInputSchema,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     async ({ agentId, runId, runtime, cwd }) => {
       try {
-        const params: QueryRunParams = { agentId, runId, runtime, cwd };
+        const params = queryParams({ agentId, runId, runtime, cwd });
         return jsonResult(await service.getRun(params));
       } catch (error) {
         return errorResult(error);
@@ -345,12 +394,12 @@ export function createServer(
     {
       title: "Cursor: cancel run",
       description: "Cancel a specific Cursor Agent run by runId.",
-      inputSchema: queryRunInputSchema,
+      inputSchema: requiredRunInputSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },
     async ({ agentId, runId, runtime, cwd }) => {
       try {
-        const params: QueryRunParams = { agentId, runId, runtime, cwd };
+        const params = queryParams({ agentId, runId, runtime, cwd });
         await service.cancelRun(params);
         return jsonResult({ cancelled: true });
       } catch (error) {

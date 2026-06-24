@@ -278,7 +278,6 @@ test("cursor_run_cloud_agent forwards cloud options", async () => {
       type: "stdio",
       command: "node",
       args: ["server.js"],
-      cwd: "/tmp/mcp",
       env: { TEST_MODE: "1" },
     },
   };
@@ -334,6 +333,33 @@ test("cursor_run_cloud_agent forwards cloud options", async () => {
   await client.close();
 });
 
+test("cursor_run_cloud_agent rejects stdio MCP cwd", async () => {
+  const service = new FakeCursorService();
+  const client = await connect(service);
+  let surfacedError = false;
+  try {
+    const res = await client.callTool({
+      name: "cursor_run_cloud_agent",
+      arguments: {
+        prompt: "Try invalid cloud MCP",
+        mcpServers: {
+          shell: {
+            type: "stdio",
+            command: "node",
+            cwd: "/tmp/mcp",
+          },
+        },
+      },
+    });
+    surfacedError = res.isError === true;
+  } catch {
+    surfacedError = true;
+  }
+  assert.equal(surfacedError, true);
+  assert.equal(service.calls.some((c) => c.method === "runCloudAgent"), false);
+  await client.close();
+});
+
 test("cursor_follow_up continues a conversation by agentId", async () => {
   const service = new FakeCursorService();
   const client = await connect(service);
@@ -375,6 +401,49 @@ test("lifecycle tools forward query parameters", async () => {
     { method: "getRun", params: { agentId: "bc-agent-cloud-test", runId: "run-1", runtime: "cloud", cwd: undefined } },
     { method: "cancelRun", params: { agentId: "bc-agent-cloud-test", runId: "run-1", runtime: "cloud", cwd: undefined } },
   ]);
+  await client.close();
+});
+
+test("lifecycle tools infer cloud runtime from bc agent ids", async () => {
+  const service = new FakeCursorService();
+  const client = await connect(service);
+
+  await client.callTool({
+    name: "cursor_list_runs",
+    arguments: { agentId: "bc-agent-cloud-test" },
+  });
+  await client.callTool({
+    name: "cursor_get_run",
+    arguments: { agentId: "bc-agent-cloud-test", runId: "run-1" },
+  });
+  await client.callTool({
+    name: "cursor_cancel_run",
+    arguments: { agentId: "bc-agent-cloud-test", runId: "run-1" },
+  });
+
+  assert.deepEqual(service.calls, [
+    { method: "listRuns", params: { agentId: "bc-agent-cloud-test", runId: undefined, runtime: "cloud", cwd: undefined } },
+    { method: "getRun", params: { agentId: "bc-agent-cloud-test", runId: "run-1", runtime: "cloud", cwd: undefined } },
+    { method: "cancelRun", params: { agentId: "bc-agent-cloud-test", runId: "run-1", runtime: "cloud", cwd: undefined } },
+  ]);
+  await client.close();
+});
+
+test("run-specific lifecycle tools require runId at validation time", async () => {
+  const service = new FakeCursorService();
+  const client = await connect(service);
+  let surfacedError = false;
+  try {
+    const res = await client.callTool({
+      name: "cursor_get_run",
+      arguments: { agentId: "agent-local-test" },
+    });
+    surfacedError = res.isError === true;
+  } catch {
+    surfacedError = true;
+  }
+  assert.equal(surfacedError, true);
+  assert.equal(service.calls.some((c) => c.method === "getRun"), false);
   await client.close();
 });
 
