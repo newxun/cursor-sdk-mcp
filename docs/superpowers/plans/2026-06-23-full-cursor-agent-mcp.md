@@ -37,7 +37,7 @@ The target user experience is:
 - Modify: `src/cursor.ts`
 - Test: `tests/server.test.ts`
 
-- [ ] **Step 1: Add service parameter and result types**
+- [x] **Step 1: Add service parameter and result types**
 
 Add exported types for local runs, cloud runs, follow-ups, run queries, cancellation, and artifact downloads:
 
@@ -110,7 +110,7 @@ export interface ArtifactParams {
 }
 ```
 
-- [ ] **Step 2: Replace the narrow service interface**
+- [x] **Step 2: Replace the narrow service interface**
 
 Update `CursorService` so production and fake services expose:
 
@@ -130,7 +130,7 @@ export interface CursorService {
 }
 ```
 
-- [ ] **Step 3: Run typecheck and capture expected failures**
+- [x] **Step 3: Run typecheck and capture expected failures**
 
 Run: `npm run typecheck`
 
@@ -144,7 +144,7 @@ Expected: FAIL until `CursorSdkService`, `src/server.ts`, and tests implement th
 - Modify: `src/cursor.ts`
 - Test: `tests/server.test.ts`
 
-- [ ] **Step 1: Add local implementation**
+- [x] **Step 1: Add local implementation**
 
 Implement `CursorSdkService.runLocalAgent()` with `Agent.create()`:
 
@@ -175,7 +175,7 @@ async runLocalAgent(params: RunLocalAgentParams): Promise<AgentRunResult> {
 }
 ```
 
-- [ ] **Step 2: Add a private formatter**
+- [x] **Step 2: Add a private formatter**
 
 Add a helper so local, cloud, and follow-up all return the same shape:
 
@@ -200,11 +200,11 @@ private formatRun(agentId: string, result: {
 }
 ```
 
-- [ ] **Step 3: Preserve backward compatibility**
+- [x] **Step 3: Preserve backward compatibility**
 
 Keep the existing `cursor_run_agent` MCP tool as a compatibility alias that calls `runLocalAgent()` with `{ prompt, cwd, model, mode }`.
 
-- [ ] **Step 4: Run the targeted tests**
+- [x] **Step 4: Run the targeted tests**
 
 Run: `npm test`
 
@@ -218,7 +218,7 @@ Expected: FAIL until server tool schemas and fake service are updated.
 - Modify: `src/cursor.ts`
 - Test: `tests/server.test.ts`
 
-- [ ] **Step 1: Add cloud implementation**
+- [x] **Step 1: Add cloud implementation**
 
 Implement `CursorSdkService.runCloudAgent()` with `Agent.create()`:
 
@@ -252,11 +252,11 @@ async runCloudAgent(params: RunCloudAgentParams): Promise<AgentRunResult> {
 }
 ```
 
-- [ ] **Step 2: Support no-repo cloud agents**
+- [x] **Step 2: Support no-repo cloud agents**
 
 Allow `repos` to be omitted so callers can create cloud agents with an empty workspace or named cloud environment.
 
-- [ ] **Step 3: Run typecheck**
+- [x] **Step 3: Run typecheck**
 
 Run: `npm run typecheck`
 
@@ -270,7 +270,7 @@ Expected: FAIL only if SDK option names differ from this plan; adjust to the ins
 - Modify: `src/cursor.ts`
 - Test: `tests/server.test.ts`
 
-- [ ] **Step 1: Implement agent and run inspection**
+- [x] **Step 1: Implement agent and run inspection**
 
 Add wrappers around `Agent.get()`, `Agent.listRuns()`, and `Agent.getRun()`:
 
@@ -303,7 +303,7 @@ async getRun(params: QueryRunParams): Promise<unknown> {
 }
 ```
 
-- [ ] **Step 2: Implement cancellation**
+- [x] **Step 2: Implement cancellation**
 
 ```typescript
 async cancelRun(params: QueryRunParams): Promise<void> {
@@ -320,7 +320,7 @@ async cancelRun(params: QueryRunParams): Promise<void> {
 }
 ```
 
-- [ ] **Step 3: Implement artifacts via resume**
+- [x] **Step 3: Implement artifacts via resume**
 
 ```typescript
 async listArtifacts(params: ArtifactParams): Promise<unknown[]> {
@@ -342,7 +342,7 @@ async downloadArtifact(params: ArtifactParams & { path: string }): Promise<Buffe
 }
 ```
 
-- [ ] **Step 4: Run typecheck**
+- [x] **Step 4: Run typecheck**
 
 Run: `npm run typecheck`
 
@@ -356,11 +356,11 @@ Expected: PASS for `src/cursor.ts` or specific SDK declaration errors that must 
 - Modify: `src/server.ts`
 - Test: `tests/server.test.ts`
 
-- [ ] **Step 1: Add shared zod schemas**
+- [x] **Step 1: Add shared zod schemas**
 
 Add schemas for MCP servers, agent definitions, repositories, local options, and cloud options. Keep schemas explicit and reject ambiguous inputs.
 
-- [ ] **Step 2: Register `cursor_run_local_agent`**
+- [x] **Step 2: Register `cursor_run_local_agent`**
 
 Expose a local tool with description:
 
@@ -368,7 +368,7 @@ Expose a local tool with description:
 Run a Cursor Agent locally against one or more working directories. The agent can read, edit, write, run shell commands, and use configured Cursor MCP servers. Use settingSources to load project, user, or plugin Cursor MCP configuration.
 ```
 
-- [ ] **Step 3: Register `cursor_run_cloud_agent`**
+- [x] **Step 3: Register `cursor_run_cloud_agent`**
 
 Expose a cloud tool with description:
 
@@ -376,7 +376,7 @@ Expose a cloud tool with description:
 Run a Cursor Cloud Agent in a Cursor-hosted or self-hosted environment. Cloud agents can use Cursor account/team MCP from cursor.com/agents, clone repositories, push branches, create PRs, and produce artifacts.
 ```
 
-- [ ] **Step 4: Register lifecycle tools**
+- [x] **Step 4: Register lifecycle tools**
 
 Add:
 
@@ -387,7 +387,7 @@ Add:
 - `cursor_list_artifacts`
 - `cursor_download_artifact`
 
-- [ ] **Step 5: Preserve existing tool names**
+- [x] **Step 5: Preserve existing tool names**
 
 Keep:
 
@@ -398,7 +398,7 @@ Keep:
 
 Make `cursor_run_agent` call the same service method as `cursor_run_local_agent`.
 
-- [ ] **Step 6: Run integration tests**
+- [x] **Step 6: Run integration tests**
 
 Run: `npm test`
 
@@ -411,7 +411,7 @@ Expected: FAIL until fake service implements all new methods and assertions are 
 **Files:**
 - Modify: `tests/server.test.ts`
 
-- [ ] **Step 1: Update fake service**
+- [x] **Step 1: Update fake service**
 
 The fake service should record the last input for each operation and return deterministic outputs:
 
@@ -426,7 +426,7 @@ const localRun = {
 };
 ```
 
-- [ ] **Step 2: Test local tool passes full options**
+- [x] **Step 2: Test local tool passes full options**
 
 Call `cursor_run_local_agent` with:
 
@@ -438,7 +438,7 @@ Call `cursor_run_local_agent` with:
 
 Assert fake service received the same values.
 
-- [ ] **Step 3: Test cloud tool passes full options**
+- [x] **Step 3: Test cloud tool passes full options**
 
 Call `cursor_run_cloud_agent` with:
 
@@ -450,15 +450,15 @@ Call `cursor_run_cloud_agent` with:
 
 Assert fake service received the same values.
 
-- [ ] **Step 4: Test lifecycle tools**
+- [x] **Step 4: Test lifecycle tools**
 
 Exercise `cursor_get_agent`, `cursor_list_runs`, `cursor_get_run`, `cursor_cancel_run`, `cursor_list_artifacts`, and `cursor_download_artifact`.
 
-- [ ] **Step 5: Test auth errors still format cleanly**
+- [x] **Step 5: Test auth errors still format cleanly**
 
 Keep coverage that service errors return MCP `isError: true` responses with clear text.
 
-- [ ] **Step 6: Run tests**
+- [x] **Step 6: Run tests**
 
 Run: `npm test`
 
@@ -472,11 +472,11 @@ Expected: PASS.
 - Modify: `examples/demo-client.ts`
 - Modify: `README.md`
 
-- [ ] **Step 1: Update demo client**
+- [x] **Step 1: Update demo client**
 
 Make the demo list all tools and call safe read-only operations by default. Keep real agent execution behind `RUN_AGENT=1`.
 
-- [ ] **Step 2: Document local usage**
+- [x] **Step 2: Document local usage**
 
 Add an example:
 
@@ -491,7 +491,7 @@ Add an example:
 }
 ```
 
-- [ ] **Step 3: Document cloud usage**
+- [x] **Step 3: Document cloud usage**
 
 Add an example:
 
@@ -504,7 +504,7 @@ Add an example:
 }
 ```
 
-- [ ] **Step 4: Document Cursor account MCP strategy**
+- [x] **Step 4: Document Cursor account MCP strategy**
 
 Explain:
 
@@ -512,11 +512,11 @@ Explain:
 - Cloud uses inline MCP plus user/team MCP from `cursor.com/agents`.
 - OAuth MCP must already be authorized in Cursor for local reuse.
 
-- [ ] **Step 5: Document skills strategy**
+- [x] **Step 5: Document skills strategy**
 
 Explain that Cursor skills should live in `.cursor/skills/`, `.agents/skills/`, `~/.cursor/skills/`, or `~/.agents/skills/`; Claude Code skills are not part of this integration goal.
 
-- [ ] **Step 6: Run docs-safe demo**
+- [x] **Step 6: Run docs-safe demo**
 
 Run: `npm run build && npm run demo`
 
@@ -529,7 +529,7 @@ Expected: PASS without `RUN_AGENT=1`; real Cursor Agent run remains opt-in.
 **Files:**
 - Modify only if tests reveal issues.
 
-- [ ] **Step 1: Run full checks**
+- [x] **Step 1: Run full checks**
 
 Run: `npm run typecheck`
 
@@ -567,7 +567,7 @@ With a disposable test repo, call `cursor_run_cloud_agent` with `autoCreatePR: f
 
 Expected: run finishes, `agentId` starts with a cloud prefix, and lifecycle tools can fetch the run.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/cursor.ts src/server.ts tests/server.test.ts examples/demo-client.ts README.md
@@ -578,10 +578,10 @@ git commit -m "feat: expose full Cursor Agent SDK capabilities"
 
 ## Self-review checklist
 
-- [ ] The implementation preserves current basic MCP tools.
-- [ ] Local mode can load Cursor project/user/plugin MCP through `settingSources`.
-- [ ] Cloud mode can use Cursor account/team MCP from `cursor.com/agents`.
-- [ ] The API is convenient for MCP clients and does not require raw SDK knowledge for common paths.
-- [ ] Safety controls are explicit and documented.
-- [ ] Tests cover local, cloud, lifecycle, artifact, and error paths.
-- [ ] README explains the difference between Cursor MCP/skills and Claude Code MCP/skills.
+- [x] The implementation preserves current basic MCP tools.
+- [x] Local mode can load Cursor project/user/plugin MCP through `settingSources`.
+- [x] Cloud mode can use Cursor account/team MCP from `cursor.com/agents`.
+- [x] The API is convenient for MCP clients and does not require raw SDK knowledge for common paths.
+- [x] Safety controls are explicit and documented.
+- [x] Tests cover local, cloud, lifecycle, artifact, and error paths.
+- [x] README explains the difference between Cursor MCP/skills and Claude Code MCP/skills.

@@ -1,10 +1,10 @@
 /**
  * End-to-end demo: spawn the built MCP server over stdio (exactly how Claude
- * Code launches it), list its tools, and call them.
+ * Code launches it), list its tools, and call safe read-only operations.
  *
  *   npm run build
  *   npm run demo                 # lists tools, calls whoami + list_models
- *   RUN_AGENT=1 npm run demo     # additionally runs a real Cursor Agent
+ *   RUN_AGENT=1 npm run demo     # additionally runs a real local Cursor Agent
  *
  * Requires CURSOR_API_KEY for the calls that hit Cursor's backend.
  */
@@ -62,14 +62,15 @@ async function main(): Promise<void> {
 
   if (process.env.RUN_AGENT === "1" && hasKey) {
     const workdir = mkdtempSync(join(tmpdir(), "cursor-mcp-demo-"));
-    console.log(`\n=== cursor_run_agent (workdir: ${workdir}) ===`);
+    console.log(`\n=== cursor_run_local_agent (workdir: ${workdir}) ===`);
     const run = await client.callTool({
-      name: "cursor_run_agent",
+      name: "cursor_run_local_agent",
       arguments: {
         prompt:
           "Create a file named hello.txt in the current directory containing exactly the text: " +
           "Hello from Cursor Agent via MCP. Then stop.",
         cwd: workdir,
+        settingSources: ["project", "user", "plugins"],
       },
     });
     console.log(textOf(run));
@@ -80,7 +81,9 @@ async function main(): Promise<void> {
       console.log("\n(hello.txt was not created)");
     }
   } else {
-    console.log("\n(Skipping cursor_run_agent. Set RUN_AGENT=1 and CURSOR_API_KEY to run a real agent.)");
+    console.log(
+      "\n(Skipping cursor_run_local_agent. Set RUN_AGENT=1 and CURSOR_API_KEY to run a real agent.)",
+    );
   }
 
   await client.close();

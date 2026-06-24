@@ -6,14 +6,60 @@
  * inject a fake backend without touching the network.
  */
 import { Agent, Cursor } from "@cursor/sdk";
+import type {
+  AgentDefinition,
+  McpServerConfig,
+  Run,
+  RunResult,
+  SettingSource,
+} from "@cursor/sdk";
 
 export type ConversationMode = "agent" | "plan";
 
-export interface RunAgentParams {
+export type { SettingSource };
+
+export type McpServerInput = McpServerConfig;
+
+export interface AgentDefinitionInput {
+  description: string;
   prompt: string;
-  cwd: string;
+  model?: string | "inherit";
+  mcpServers?: Array<string | Record<string, McpServerInput>>;
+}
+
+export interface RunLocalAgentParams {
+  prompt: string;
+  cwd: string | string[];
   model?: string;
   mode?: ConversationMode;
+  settingSources?: SettingSource[];
+  mcpServers?: Record<string, McpServerInput>;
+  agents?: Record<string, AgentDefinitionInput>;
+  sandboxOptions?: { enabled: boolean };
+  autoReview?: boolean;
+  name?: string;
+}
+
+export interface CloudRepositoryInput {
+  url: string;
+  startingRef?: string;
+  prUrl?: string;
+}
+
+export interface RunCloudAgentParams {
+  prompt: string;
+  model?: string;
+  mode?: ConversationMode;
+  name?: string;
+  repos?: CloudRepositoryInput[];
+  env?: { type: "cloud" | "pool" | "machine"; name?: string };
+  workOnCurrentBranch?: boolean;
+  autoCreatePR?: boolean;
+  skipReviewerRequest?: boolean;
+  envVars?: Record<string, string>;
+  mcpServers?: Record<string, McpServerInput>;
+  agents?: Record<string, AgentDefinitionInput>;
+  idempotencyKey?: string;
 }
 
 export interface FollowUpParams {
@@ -30,6 +76,18 @@ export interface AgentRunResult {
   requestId?: string;
   model?: string;
   git?: unknown;
+}
+
+export interface QueryRunParams {
+  agentId: string;
+  runId?: string;
+  runtime?: "local" | "cloud";
+  cwd?: string;
+}
+
+export interface ArtifactParams {
+  agentId: string;
+  path?: string;
 }
 
 export interface ModelInfo {
@@ -51,8 +109,15 @@ export interface WhoAmI {
 export interface CursorService {
   whoami(): Promise<WhoAmI>;
   listModels(): Promise<ModelInfo[]>;
-  runAgent(params: RunAgentParams): Promise<AgentRunResult>;
+  runLocalAgent(params: RunLocalAgentParams): Promise<AgentRunResult>;
+  runCloudAgent(params: RunCloudAgentParams): Promise<AgentRunResult>;
   followUp(params: FollowUpParams): Promise<AgentRunResult>;
+  getAgent(params: QueryRunParams): Promise<unknown>;
+  listRuns(params: QueryRunParams): Promise<unknown>;
+  getRun(params: QueryRunParams): Promise<unknown>;
+  cancelRun(params: QueryRunParams): Promise<void>;
+  listArtifacts(params: ArtifactParams): Promise<unknown[]>;
+  downloadArtifact(params: ArtifactParams & { path: string }): Promise<Buffer>;
 }
 
 export interface CursorServiceOptions {
@@ -117,26 +182,88 @@ export class CursorSdkService implements CursorService {
     }));
   }
 
-  async runAgent(params: RunAgentParams): Promise<AgentRunResult> {
+  private toSdkAgents(
+    agents: Record<string, AgentDefinitionInput> | undefined,
+  ): Record<string, AgentDefinition> | undefined {
+    if (!agents) return undefined;
+    return Object.fromEntries(
+      Object.entries(agents).map(([name, definition]) => [
+        name,
+        {
+          description: definition.description,
+          prompt: definition.prompt,
+          model:
+            definition.model === undefined
+              ? undefined
+              : definition.model === "inherit"
+                ? "inherit"
+                : { id: definition.model },
+          mcpServers: definition.mcpServers,
+        },
+      ]),
+    );
+  }
+
+  private formatRun(agentId: string, result: RunResult): AgentRunResult {
+    return {
+      agentId,
+      status: result.status,
+      result: result.result ?? "",
+      durationMs: result.durationMs,
+      requestId: result.requestId,
+      model: result.model?.id,
+      git: result.git,
+    };
+  }
+
+  async runLocalAgent(params: RunLocalAgentParams): Promise<AgentRunResult> {
     const apiKey = this.requireApiKey();
     const agent = await Agent.create({
       apiKey,
+      name: params.name,
       model: { id: params.model ?? this.defaultModel },
       mode: params.mode,
-      local: { cwd: params.cwd },
+      local: {
+        cwd: params.cwd,
+        settingSources: params.settingSources,
+        sandboxOptions: params.sandboxOptions,
+        autoReview: params.autoReview,
+      },
+      mcpServers: params.mcpServers,
+      agents: this.toSdkAgents(params.agents),
     });
     try {
       const run = await agent.send(params.prompt);
       const result = await run.wait();
-      return {
-        agentId: agent.agentId,
-        status: result.status,
-        result: result.result ?? "",
-        durationMs: result.durationMs,
-        requestId: result.requestId,
-        model: result.model?.id,
-        git: result.git,
-      };
+      return this.formatRun(agent.agentId, result);
+    } finally {
+      await disposeAgent(agent);
+    }
+  }
+
+  async runCloudAgent(params: RunCloudAgentParams): Promise<AgentRunResult> {
+    const apiKey = this.requireApiKey();
+    const agent = await Agent.create({
+      apiKey,
+      name: params.name,
+      model: { id: params.model ?? this.defaultModel },
+      mode: params.mode,
+      cloud: {
+        env: params.env,
+        repos: params.repos,
+        workOnCurrentBranch: params.workOnCurrentBranch,
+        autoCreatePR: params.autoCreatePR,
+        skipReviewerRequest: params.skipReviewerRequest,
+        envVars: params.envVars,
+      },
+      mcpServers: params.mcpServers,
+      agents: this.toSdkAgents(params.agents),
+      idempotencyKey: params.idempotencyKey,
+    });
+    try {
+      const run = await agent.send(params.prompt);
+      const result = await run.wait();
+      return this.formatRun(agent.agentId, result);
     } finally {
       await disposeAgent(agent);
     }
@@ -151,15 +278,78 @@ export class CursorSdkService implements CursorService {
         params.model ? { model: { id: params.model } } : undefined,
       );
       const result = await run.wait();
+      return this.formatRun(agent.agentId, result);
+    } finally {
+      await disposeAgent(agent);
+    }
+  }
+
+  async getAgent(params: QueryRunParams): Promise<unknown> {
+    return Agent.get(params.agentId, {
+      cwd: params.cwd,
+      apiKey: this.apiKey,
+    });
+  }
+
+  private runtimeFor(params: QueryRunParams): "local" | "cloud" {
+    return params.runtime ?? (params.agentId.startsWith("bc-") ? "cloud" : "local");
+  }
+
+  async listRuns(params: QueryRunParams): Promise<unknown> {
+    if (this.runtimeFor(params) === "cloud") {
+      return Agent.listRuns(params.agentId, {
+        runtime: "cloud",
+        apiKey: this.requireApiKey(),
+      });
+    }
+    return Agent.listRuns(params.agentId, {
+      runtime: "local",
+      cwd: params.cwd,
+    });
+  }
+
+  private getRunOptions(params: QueryRunParams): Parameters<typeof Agent.getRun>[1] {
+    if (this.runtimeFor(params) === "cloud") {
       return {
-        agentId: agent.agentId,
-        status: result.status,
-        result: result.result ?? "",
-        durationMs: result.durationMs,
-        requestId: result.requestId,
-        model: result.model?.id,
-        git: result.git,
+        runtime: "cloud",
+        agentId: params.agentId,
+        apiKey: this.requireApiKey(),
       };
+    }
+    return {
+      runtime: "local",
+      cwd: params.cwd,
+    };
+  }
+
+  async getRun(params: QueryRunParams): Promise<Run> {
+    if (!params.runId) {
+      throw new Error("runId is required.");
+    }
+    return Agent.getRun(params.runId, this.getRunOptions(params));
+  }
+
+  async cancelRun(params: QueryRunParams): Promise<void> {
+    if (!params.runId) {
+      throw new Error("runId is required.");
+    }
+    const run = await Agent.getRun(params.runId, this.getRunOptions(params));
+    await run.cancel();
+  }
+
+  async listArtifacts(params: ArtifactParams): Promise<unknown[]> {
+    const agent = await Agent.resume(params.agentId, { apiKey: this.requireApiKey() });
+    try {
+      return agent.listArtifacts();
+    } finally {
+      await disposeAgent(agent);
+    }
+  }
+
+  async downloadArtifact(params: ArtifactParams & { path: string }): Promise<Buffer> {
+    const agent = await Agent.resume(params.agentId, { apiKey: this.requireApiKey() });
+    try {
+      return agent.downloadArtifact(params.path);
     } finally {
       await disposeAgent(agent);
     }
