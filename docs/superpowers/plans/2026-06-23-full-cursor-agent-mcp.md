@@ -516,7 +516,7 @@ Explain:
 
 Explain that Cursor skills should live in `.cursor/skills/`, `.agents/skills/`, `~/.cursor/skills/`, or `~/.agents/skills/`; Claude Code skills are not part of this integration goal.
 
-- [ ] **Step 6: Run docs-safe demo**
+- [x] **Step 6: Run docs-safe demo**
 
 Run: `npm run build && npm run demo`
 
@@ -529,7 +529,7 @@ Expected: PASS without `RUN_AGENT=1`; real Cursor Agent run remains opt-in.
 **Files:**
 - Modify only if tests reveal issues.
 
-- [ ] **Step 1: Run full checks**
+- [x] **Step 1: Run full checks**
 
 Run: `npm run typecheck`
 
@@ -567,7 +567,7 @@ With a disposable test repo, call `cursor_run_cloud_agent` with `autoCreatePR: f
 
 Expected: run finishes, `agentId` starts with a cloud prefix, and lifecycle tools can fetch the run.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/cursor.ts src/server.ts tests/server.test.ts examples/demo-client.ts README.md
@@ -578,10 +578,10 @@ git commit -m "feat: expose full Cursor Agent SDK capabilities"
 
 ## Self-review checklist
 
-- [ ] The implementation preserves current basic MCP tools.
-- [ ] Local mode can load Cursor project/user/plugin MCP through `settingSources`.
-- [ ] Cloud mode can use Cursor account/team MCP from `cursor.com/agents`.
-- [ ] The API is convenient for MCP clients and does not require raw SDK knowledge for common paths.
-- [ ] Safety controls are explicit and documented.
-- [ ] Tests cover local, cloud, lifecycle, artifact, and error paths.
-- [ ] README explains the difference between Cursor MCP/skills and Claude Code MCP/skills.
+- [x] The implementation preserves current basic MCP tools.
+- [x] Local mode can load Cursor project/user/plugin MCP through `settingSources`.
+- [x] Cloud mode can use Cursor account/team MCP from `cursor.com/agents`.
+- [x] The API is convenient for MCP clients and does not require raw SDK knowledge for common paths.
+- [x] Safety controls are explicit and documented.
+- [x] Tests cover local, cloud, lifecycle, artifact, and error paths.
+- [x] README explains the difference between Cursor MCP/skills and Claude Code MCP/skills.
