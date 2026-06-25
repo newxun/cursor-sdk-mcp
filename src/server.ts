@@ -22,10 +22,20 @@ const DEFAULT_SERVER_INFO: ServerInfo = {
 };
 
 function jsonResult(value: unknown): CallToolResult {
+  const structured = toPlainJson(value);
   return {
-    content: [{ type: "text", text: JSON.stringify(value, null, 2) }],
-    structuredContent: value as Record<string, unknown>,
+    content: [{ type: "text", text: JSON.stringify(structured, null, 2) }],
+    structuredContent: isRecord(structured) ? structured : { value: structured },
   };
+}
+
+function toPlainJson(value: unknown): unknown {
+  const json = JSON.stringify(value);
+  return json === undefined ? null : JSON.parse(json);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function errorResult(error: unknown): CallToolResult {
@@ -116,8 +126,8 @@ const localAgentInputSchema = {
     .describe('Model id (e.g. "composer-2.5"). Defaults to the server default ("auto").'),
   mode: modeSchema,
   settingSources: z.array(settingSourceSchema).optional(),
-  mcpServers: z.record(cloudMcpServerSchema).optional(),
-  agents: z.record(cloudAgentDefinitionSchema).optional(),
+  mcpServers: z.record(mcpServerSchema).optional(),
+  agents: z.record(agentDefinitionSchema).optional(),
   sandboxOptions: z.object({ enabled: z.boolean() }).strict().optional(),
   autoReview: z.boolean().optional(),
   name: z.string().min(1).optional(),
@@ -148,8 +158,8 @@ const cloudAgentInputSchema = {
   autoCreatePR: z.boolean().optional(),
   skipReviewerRequest: z.boolean().optional(),
   envVars: z.record(z.string()).optional(),
-  mcpServers: z.record(mcpServerSchema).optional(),
-  agents: z.record(agentDefinitionSchema).optional(),
+  mcpServers: z.record(cloudMcpServerSchema).optional(),
+  agents: z.record(cloudAgentDefinitionSchema).optional(),
   idempotencyKey: z.string().min(1).optional(),
 };
 
@@ -167,6 +177,8 @@ const requiredRunInputSchema = {
 
 const artifactInputSchema = {
   agentId: z.string().min(1),
+  runtime: z.enum(["local", "cloud"]).optional(),
+  cwd: z.string().min(1).optional(),
 };
 
 function queryParams(params: QueryRunParams): QueryRunParams {
@@ -323,12 +335,19 @@ export function createServer(
           .describe("The agentId returned by a previous cursor_run_agent call."),
         prompt: z.string().min(1).describe("Follow-up instruction for the agent."),
         model: z.string().optional().describe("Optional per-run model override."),
+        runtime: z.enum(["local", "cloud"]).optional(),
+        cwd: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Required for local agents when the original cwd is not the current process cwd."),
       },
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },
-    async ({ agentId, prompt, model }) => {
+    async ({ agentId, prompt, model, runtime, cwd }) => {
       try {
-        return formatRun(await service.followUp({ agentId, prompt, model }));
+        const { runtime: resolvedRuntime } = queryParams({ agentId, runtime, cwd });
+        return formatRun(await service.followUp({ agentId, prompt, model, runtime: resolvedRuntime, cwd }));
       } catch (error) {
         return errorResult(error);
       }
@@ -416,9 +435,10 @@ export function createServer(
       inputSchema: artifactInputSchema,
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ agentId }) => {
+    async ({ agentId, runtime, cwd }) => {
       try {
-        return jsonResult({ artifacts: await service.listArtifacts({ agentId }) });
+        const params = queryParams({ agentId, runtime, cwd });
+        return jsonResult({ artifacts: await service.listArtifacts(params) });
       } catch (error) {
         return errorResult(error);
       }
@@ -436,9 +456,10 @@ export function createServer(
       },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    async ({ agentId, path }) => {
+    async ({ agentId, path, runtime, cwd }) => {
       try {
-        const content = await service.downloadArtifact({ agentId, path });
+        const params = queryParams({ agentId, runtime, cwd });
+        const content = await service.downloadArtifact({ ...params, path });
         return jsonResult({
           agentId,
           path,
