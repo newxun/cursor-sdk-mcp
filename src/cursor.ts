@@ -66,6 +66,8 @@ export interface FollowUpParams {
   agentId: string;
   prompt: string;
   model?: string;
+  runtime?: "local" | "cloud";
+  cwd?: string;
 }
 
 export interface AgentRunResult {
@@ -88,6 +90,8 @@ export interface QueryRunParams {
 export interface ArtifactParams {
   agentId: string;
   path?: string;
+  runtime?: "local" | "cloud";
+  cwd?: string;
 }
 
 export interface ModelInfo {
@@ -216,6 +220,20 @@ export class CursorSdkService implements CursorService {
     };
   }
 
+  private formatRunRecord(run: Run): Record<string, unknown> {
+    return {
+      id: run.id,
+      agentId: run.agentId,
+      status: run.status,
+      result: run.result,
+      requestId: run.requestId,
+      model: run.model,
+      durationMs: run.durationMs,
+      git: run.git,
+      createdAt: run.createdAt,
+    };
+  }
+
   async runLocalAgent(params: RunLocalAgentParams): Promise<AgentRunResult> {
     const apiKey = this.requireApiKey();
     const agent = await Agent.create({
@@ -270,8 +288,7 @@ export class CursorSdkService implements CursorService {
   }
 
   async followUp(params: FollowUpParams): Promise<AgentRunResult> {
-    const apiKey = this.requireApiKey();
-    const agent = await Agent.resume(params.agentId, { apiKey });
+    const agent = await Agent.resume(params.agentId, this.resumeOptions(params));
     try {
       const run = await agent.send(
         params.prompt,
@@ -295,17 +312,39 @@ export class CursorSdkService implements CursorService {
     return params.runtime ?? (params.agentId.startsWith("bc-") ? "cloud" : "local");
   }
 
+  private resumeOptions(params: {
+    agentId: string;
+    runtime?: "local" | "cloud";
+    cwd?: string;
+  }): Parameters<typeof Agent.resume>[1] {
+    const options: NonNullable<Parameters<typeof Agent.resume>[1]> = {
+      apiKey: this.requireApiKey(),
+    };
+    if (this.runtimeFor(params) === "local" && params.cwd) {
+      options.local = { cwd: params.cwd };
+    }
+    return options;
+  }
+
   async listRuns(params: QueryRunParams): Promise<unknown> {
     if (this.runtimeFor(params) === "cloud") {
-      return Agent.listRuns(params.agentId, {
+      const runs = await Agent.listRuns(params.agentId, {
         runtime: "cloud",
         apiKey: this.requireApiKey(),
       });
+      return {
+        ...runs,
+        items: runs.items.map((run) => this.formatRunRecord(run)),
+      };
     }
-    return Agent.listRuns(params.agentId, {
+    const runs = await Agent.listRuns(params.agentId, {
       runtime: "local",
       cwd: params.cwd,
     });
+    return {
+      ...runs,
+      items: runs.items.map((run) => this.formatRunRecord(run)),
+    };
   }
 
   private getRunOptions(params: QueryRunParams): Parameters<typeof Agent.getRun>[1] {
@@ -322,11 +361,12 @@ export class CursorSdkService implements CursorService {
     };
   }
 
-  async getRun(params: QueryRunParams): Promise<Run> {
+  async getRun(params: QueryRunParams): Promise<Record<string, unknown>> {
     if (!params.runId) {
       throw new Error("runId is required.");
     }
-    return Agent.getRun(params.runId, this.getRunOptions(params));
+    const run = await Agent.getRun(params.runId, this.getRunOptions(params));
+    return this.formatRunRecord(run);
   }
 
   async cancelRun(params: QueryRunParams): Promise<void> {
@@ -338,7 +378,7 @@ export class CursorSdkService implements CursorService {
   }
 
   async listArtifacts(params: ArtifactParams): Promise<unknown[]> {
-    const agent = await Agent.resume(params.agentId, { apiKey: this.requireApiKey() });
+    const agent = await Agent.resume(params.agentId, this.resumeOptions(params));
     try {
       return agent.listArtifacts();
     } finally {
@@ -347,7 +387,7 @@ export class CursorSdkService implements CursorService {
   }
 
   async downloadArtifact(params: ArtifactParams & { path: string }): Promise<Buffer> {
-    const agent = await Agent.resume(params.agentId, { apiKey: this.requireApiKey() });
+    const agent = await Agent.resume(params.agentId, this.resumeOptions(params));
     try {
       return agent.downloadArtifact(params.path);
     } finally {

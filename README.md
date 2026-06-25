@@ -92,6 +92,8 @@ Use `cursor_run_local_agent` when the agent should work in local directories:
 
 `settingSources` controls which Cursor MCP/settings layers the local runtime loads from disk. You can
 also pass inline `mcpServers`, `agents`, and `sandboxOptions` for one-off tool wiring and safety.
+For local `cursor_follow_up`, lifecycle, and artifact calls, pass the same `cwd` used to create the
+agent so the SDK can find persisted local agent state.
 
 ## Cloud agent usage
 
@@ -113,6 +115,7 @@ inspect runs, cancel work, and fetch artifacts.
 ## Cursor MCP and skills strategy
 
 - Local agents use inline MCP unless `settingSources` includes project, user, or plugin settings.
+- Local stdio MCP servers may include `cwd`; cloud stdio MCP servers must not include `cwd`.
 - Cloud agents use inline MCP plus user/team MCP from `cursor.com/agents`.
 - OAuth MCP must already be authorized in Cursor before local reuse.
 - Cursor skills can live in `.cursor/skills/`, `.agents/skills/`, `~/.cursor/skills/`, or

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { Agent } from "@cursor/sdk";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
@@ -16,6 +17,7 @@ import type {
   ModelInfo,
   WhoAmI,
 } from "../src/cursor.js";
+import { CursorSdkService } from "../src/cursor.js";
 import { createServer } from "../src/server.js";
 
 class FakeCursorService implements CursorService {
@@ -267,6 +269,19 @@ test("cursor_run_local_agent forwards local options", async () => {
   await client.close();
 });
 
+test("local and cloud tools advertise the correct stdio MCP cwd support", async () => {
+  const client = await connect(new FakeCursorService());
+  const { tools } = await client.listTools();
+  const local = tools.find((tool) => tool.name === "cursor_run_local_agent");
+  const cloud = tools.find((tool) => tool.name === "cursor_run_cloud_agent");
+  const localSchema = JSON.stringify(local?.inputSchema);
+  const cloudSchema = JSON.stringify(cloud?.inputSchema);
+
+  assert.match(localSchema, /"cwd"/);
+  assert.doesNotMatch(cloudSchema, /"cwd"/);
+  await client.close();
+});
+
 test("cursor_run_cloud_agent forwards cloud options", async () => {
   const service = new FakeCursorService();
   const client = await connect(service);
@@ -373,6 +388,29 @@ test("cursor_follow_up continues a conversation by agentId", async () => {
   await client.close();
 });
 
+test("cursor_follow_up forwards local cwd for resumed local agents", async () => {
+  const service = new FakeCursorService();
+  const client = await connect(service);
+
+  await client.callTool({
+    name: "cursor_follow_up",
+    arguments: {
+      agentId: "agent-local-test",
+      prompt: "Continue locally",
+      cwd: "/tmp/work",
+    },
+  });
+
+  assert.deepEqual(service.calls.find((c) => c.method === "followUp")?.params, {
+    agentId: "agent-local-test",
+    prompt: "Continue locally",
+    model: undefined,
+    runtime: "local",
+    cwd: "/tmp/work",
+  });
+  await client.close();
+});
+
 test("lifecycle tools forward query parameters", async () => {
   const service = new FakeCursorService();
   const client = await connect(service);
@@ -400,6 +438,59 @@ test("lifecycle tools forward query parameters", async () => {
     { method: "listRuns", params: { agentId: "agent-local-test", runtime: "local", cwd: "/tmp/work", runId: undefined } },
     { method: "getRun", params: { agentId: "bc-agent-cloud-test", runId: "run-1", runtime: "cloud", cwd: undefined } },
     { method: "cancelRun", params: { agentId: "bc-agent-cloud-test", runId: "run-1", runtime: "cloud", cwd: undefined } },
+  ]);
+  await client.close();
+});
+
+test("lifecycle tools serialize class instances as plain structured content", async () => {
+  class AgentInfo {
+    agentId = "agent-local-test";
+    name = "Local Agent";
+  }
+  class InstanceService extends FakeCursorService {
+    override async getAgent(params: QueryRunParams): Promise<unknown> {
+      this.calls.push({ method: "getAgent", params });
+      return new AgentInfo();
+    }
+  }
+  const client = await connect(new InstanceService());
+
+  const res = await client.callTool({
+    name: "cursor_get_agent",
+    arguments: { agentId: "agent-local-test", cwd: "/tmp/work" },
+  });
+
+  assert.equal(res.isError ?? false, false);
+  assert.deepEqual(res.structuredContent, {
+    agentId: "agent-local-test",
+    name: "Local Agent",
+  });
+  await client.close();
+});
+
+
+test("run lifecycle tools forward local cwd for run-specific local operations", async () => {
+  const service = new FakeCursorService();
+  const client = await connect(service);
+
+  await client.callTool({
+    name: "cursor_get_run",
+    arguments: { agentId: "agent-local-test", runId: "run-local-1", cwd: "/tmp/work" },
+  });
+  await client.callTool({
+    name: "cursor_cancel_run",
+    arguments: { agentId: "agent-local-test", runId: "run-local-1", cwd: "/tmp/work" },
+  });
+
+  assert.deepEqual(service.calls, [
+    {
+      method: "getRun",
+      params: { agentId: "agent-local-test", runId: "run-local-1", runtime: "local", cwd: "/tmp/work" },
+    },
+    {
+      method: "cancelRun",
+      params: { agentId: "agent-local-test", runId: "run-local-1", runtime: "local", cwd: "/tmp/work" },
+    },
   ]);
   await client.close();
 });
@@ -469,6 +560,111 @@ test("artifact tools list metadata and return base64 content", async () => {
     contentBase64: Buffer.from("# summary.md\n").toString("base64"),
   });
   await client.close();
+});
+
+test("artifact tools forward local cwd for local agents", async () => {
+  const service = new FakeCursorService();
+  const client = await connect(service);
+
+  await client.callTool({
+    name: "cursor_list_artifacts",
+    arguments: { agentId: "agent-local-test", cwd: "/tmp/work" },
+  });
+  await client.callTool({
+    name: "cursor_download_artifact",
+    arguments: { agentId: "agent-local-test", path: "summary.md", cwd: "/tmp/work" },
+  });
+
+  assert.deepEqual(service.calls, [
+    { method: "listArtifacts", params: { agentId: "agent-local-test", runtime: "local", cwd: "/tmp/work" } },
+    {
+      method: "downloadArtifact",
+      params: { agentId: "agent-local-test", path: "summary.md", runtime: "local", cwd: "/tmp/work" },
+    },
+  ]);
+  await client.close();
+});
+
+test("CursorSdkService passes local cwd to resume-based SDK operations", async (t) => {
+  const resumeCalls: unknown[] = [];
+  const fakeAgent = {
+    agentId: "agent-local-test",
+    send: async () => ({
+      wait: async () => ({ id: "run-1", status: "finished", result: "ok" }),
+    }),
+    close: () => {},
+    [Symbol.asyncDispose]: async () => {},
+    listArtifacts: async () => [],
+    downloadArtifact: async () => Buffer.from("artifact"),
+  };
+  t.mock.method(Agent, "resume", async (_agentId, options) => {
+    resumeCalls.push(options);
+    return fakeAgent as Awaited<ReturnType<typeof Agent.resume>>;
+  });
+
+  const service = new CursorSdkService({ apiKey: "test-key" });
+  await service.followUp({ agentId: "agent-local-test", prompt: "continue", cwd: "/tmp/work" });
+  await service.listArtifacts({ agentId: "agent-local-test", cwd: "/tmp/work" });
+  await service.downloadArtifact({ agentId: "agent-local-test", path: "summary.md", cwd: "/tmp/work" });
+
+  assert.deepEqual(resumeCalls, [
+    { apiKey: "test-key", local: { cwd: "/tmp/work" } },
+    { apiKey: "test-key", local: { cwd: "/tmp/work" } },
+    { apiKey: "test-key", local: { cwd: "/tmp/work" } },
+  ]);
+});
+
+test("CursorSdkService passes local cwd to local query SDK operations", async (t) => {
+  const calls: Array<{ method: string; options: unknown }> = [];
+  const fakeRun = {
+    id: "run-local-1",
+    agentId: "agent-local-test",
+    status: "finished",
+    result: "ok",
+    supports: () => true,
+    unsupportedReason: () => undefined,
+    stream: async function* () {},
+    conversation: async () => [],
+    wait: async () => ({ id: "run-local-1", status: "finished", result: "ok" }),
+    cancel: async () => {},
+    onDidChangeStatus: () => () => {},
+  };
+  t.mock.method(Agent, "get", async (_agentId, options) => {
+    calls.push({ method: "get", options });
+    return { agentId: "agent-local-test", name: "Local", summary: "", lastModified: 1 };
+  });
+  t.mock.method(Agent, "listRuns", async (_agentId, options) => {
+    calls.push({ method: "listRuns", options });
+    return { items: [], nextCursor: undefined };
+  });
+  t.mock.method(Agent, "getRun", async (_runId, options) => {
+    calls.push({ method: "getRun", options });
+    return fakeRun as Awaited<ReturnType<typeof Agent.getRun>>;
+  });
+
+  const service = new CursorSdkService({ apiKey: "test-key" });
+  await service.getAgent({ agentId: "agent-local-test", cwd: "/tmp/work" });
+  await service.listRuns({ agentId: "agent-local-test", cwd: "/tmp/work" });
+  const run = await service.getRun({ agentId: "agent-local-test", runId: "run-local-1", cwd: "/tmp/work" });
+  await service.cancelRun({ agentId: "agent-local-test", runId: "run-local-1", cwd: "/tmp/work" });
+
+  assert.deepEqual(run, {
+    id: "run-local-1",
+    agentId: "agent-local-test",
+    status: "finished",
+    result: "ok",
+    requestId: undefined,
+    model: undefined,
+    durationMs: undefined,
+    git: undefined,
+    createdAt: undefined,
+  });
+  assert.deepEqual(calls, [
+    { method: "get", options: { cwd: "/tmp/work", apiKey: "test-key" } },
+    { method: "listRuns", options: { runtime: "local", cwd: "/tmp/work" } },
+    { method: "getRun", options: { runtime: "local", cwd: "/tmp/work" } },
+    { method: "getRun", options: { runtime: "local", cwd: "/tmp/work" } },
+  ]);
 });
 
 test("input validation flags missing required fields", async () => {
