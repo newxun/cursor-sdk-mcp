@@ -177,27 +177,17 @@ function clip(text: string, max = 160): string {
 }
 
 /**
- * Turns a streamed {@link SDKMessage} into a short, human-readable progress
- * line. Returns `undefined` for messages with nothing useful to show, so the
- * caller can skip emitting an empty notification.
+ * Summarizes an "instantaneous" {@link SDKMessage} (anything other than the
+ * incrementally-streamed assistant text) into a short progress line. Assistant
+ * text is intentionally not handled here — it arrives one token per message and
+ * is coalesced by {@link ProgressReducer} instead. Returns `undefined` when the
+ * message has nothing useful to show.
  */
 export function summarizeSdkMessage(message: SDKMessage): RunProgressEvent | undefined {
   switch (message.type) {
     case "system": {
       const model = message.model?.id ? ` (model ${message.model.id})` : "";
       return { type: message.type, message: `Agent initialized${model}.` };
-    }
-    case "assistant": {
-      const parts: string[] = [];
-      for (const block of message.message.content) {
-        if (block.type === "text" && block.text.trim()) {
-          parts.push(clip(block.text));
-        } else if (block.type === "tool_use") {
-          parts.push(`→ ${block.name}`);
-        }
-      }
-      if (parts.length === 0) return undefined;
-      return { type: message.type, message: parts.join(" ") };
     }
     case "tool_call": {
       return { type: message.type, message: `tool ${message.name}: ${message.status}` };
@@ -216,6 +206,57 @@ export function summarizeSdkMessage(message: SDKMessage): RunProgressEvent | und
     }
     default:
       return undefined;
+  }
+}
+
+const SENTENCE_END = /[.!?。！？\n]["'”’)）]?\s*$/;
+
+/**
+ * Coalesces the fine-grained SDK message stream into meaningful progress lines.
+ *
+ * The raw stream emits one assistant message per token and repeats `thinking`,
+ * which is far too noisy to forward verbatim. This reducer instead:
+ * - buffers assistant text and flushes it as one line on a sentence boundary,
+ *   on any non-assistant event, or at the end of the run;
+ * - forwards tool calls and status changes immediately (the useful "actions");
+ * - drops consecutive duplicate lines (e.g. repeated `thinking…`).
+ */
+export class ProgressReducer {
+  private assistantBuffer = "";
+  private lastLine?: string;
+
+  constructor(private readonly emit: (event: RunProgressEvent) => void) {}
+
+  push(message: SDKMessage): void {
+    if (message.type === "assistant") {
+      for (const block of message.message.content) {
+        if (block.type === "text") this.assistantBuffer += block.text;
+      }
+      if (SENTENCE_END.test(this.assistantBuffer)) this.flushAssistant();
+      return;
+    }
+    // Any non-assistant event is a boundary: emit buffered narration first so
+    // lines stay in the order the user would read them.
+    this.flushAssistant();
+    const event = summarizeSdkMessage(message);
+    if (event) this.line(event.type, event.message);
+  }
+
+  /** Flushes any buffered assistant text. Call once after the stream ends. */
+  end(): void {
+    this.flushAssistant();
+  }
+
+  private flushAssistant(): void {
+    const text = clip(this.assistantBuffer);
+    this.assistantBuffer = "";
+    if (text) this.line("assistant", text);
+  }
+
+  private line(type: RunProgressEvent["type"], message: string): void {
+    if (message === this.lastLine) return;
+    this.lastLine = message;
+    this.emit({ type, message });
   }
 }
 
@@ -290,13 +331,15 @@ export class CursorSdkService implements CursorService {
     const removeAbort = this.wireAbort(run, hooks?.signal);
     try {
       if (hooks?.onProgress && run.supports("stream")) {
+        const reducer = new ProgressReducer(hooks.onProgress);
         try {
           for await (const message of run.stream()) {
-            const event = summarizeSdkMessage(message);
-            if (event) hooks.onProgress(event);
+            reducer.push(message);
           }
         } catch {
           // Streaming is advisory; fall through to wait() for the real result.
+        } finally {
+          reducer.end();
         }
       }
       const result = await run.wait();

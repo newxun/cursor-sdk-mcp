@@ -19,7 +19,7 @@ import type {
   ModelInfo,
   WhoAmI,
 } from "../src/cursor.js";
-import { CursorSdkService } from "../src/cursor.js";
+import { CursorSdkService, ProgressReducer } from "../src/cursor.js";
 import { createServer } from "../src/server.js";
 
 class FakeCursorService implements CursorService {
@@ -611,6 +611,45 @@ test("artifact tools forward local cwd for local agents", async () => {
     },
   ]);
   await client.close();
+});
+
+test("ProgressReducer coalesces token-level text and drops duplicate lines", () => {
+  const events: RunProgressEvent[] = [];
+  const reducer = new ProgressReducer((event) => events.push(event));
+  const assistant = (text: string) =>
+    ({
+      type: "assistant",
+      agent_id: "a",
+      run_id: "r",
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    }) as never;
+  const tool = (status: string) =>
+    ({ type: "tool_call", agent_id: "a", run_id: "r", call_id: "c", name: "edit", status }) as never;
+  const thinking = () => ({ type: "thinking", agent_id: "a", run_id: "r", text: "" }) as never;
+
+  reducer.push({ type: "system", agent_id: "a", run_id: "r" } as never);
+  // Token-by-token narration with no sentence terminator yet.
+  for (const token of ["正在", "创建 ", "hello.txt"]) reducer.push(assistant(token));
+  // A tool call is a boundary: buffered narration flushes as one line first.
+  reducer.push(tool("running"));
+  reducer.push(tool("running")); // duplicate -> dropped
+  reducer.push(tool("completed"));
+  reducer.push(thinking());
+  reducer.push(thinking()); // duplicate -> dropped
+  reducer.push(assistant("完成了。")); // sentence terminator -> flushes immediately
+  reducer.end();
+
+  assert.deepEqual(
+    events.map((event) => event.message),
+    [
+      "Agent initialized.",
+      "正在创建 hello.txt",
+      "tool edit: running",
+      "tool edit: completed",
+      "thinking…",
+      "完成了。",
+    ],
+  );
 });
 
 test("CursorSdkService streams progress and cancels the run on abort", async (t) => {
