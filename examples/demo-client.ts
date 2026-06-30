@@ -63,16 +63,26 @@ async function main(): Promise<void> {
   if (process.env.RUN_AGENT === "1" && hasKey) {
     const workdir = mkdtempSync(join(tmpdir(), "cursor-mcp-demo-"));
     console.log(`\n=== cursor_run_local_agent (workdir: ${workdir}) ===`);
-    const run = await client.callTool({
-      name: "cursor_run_local_agent",
-      arguments: {
-        prompt:
-          "Create a file named hello.txt in the current directory containing exactly the text: " +
-          "Hello from Cursor Agent via MCP. Then stop.",
-        cwd: workdir,
-        settingSources: ["project", "user", "plugins"],
+    // Passing `onprogress` makes the SDK attach a progressToken to the request,
+    // so the server streams the agent's steps back as live progress.
+    const run = await client.callTool(
+      {
+        name: "cursor_run_local_agent",
+        arguments: {
+          prompt:
+            "Create a file named hello.txt in the current directory containing exactly the text: " +
+            "Hello from Cursor Agent via MCP. Then stop.",
+          cwd: workdir,
+          settingSources: ["project", "user", "plugins"],
+        },
       },
-    });
+      undefined,
+      {
+        onprogress: (p) => {
+          if (p.message) console.log(`  · ${p.message}`);
+        },
+      },
+    );
     console.log(textOf(run));
     try {
       const contents = await readFile(join(workdir, "hello.txt"), "utf8");

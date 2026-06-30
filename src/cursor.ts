@@ -11,10 +11,33 @@ import type {
   McpServerConfig,
   Run,
   RunResult,
+  SDKMessage,
   SettingSource,
 } from "@cursor/sdk";
 
 export type ConversationMode = "agent" | "plan";
+
+/**
+ * A human-readable progress event derived from a single streamed SDK message.
+ * `type` mirrors the underlying {@link SDKMessage} discriminator so callers can
+ * filter (e.g. drop "thinking") if they want.
+ */
+export interface RunProgressEvent {
+  type: SDKMessage["type"];
+  message: string;
+}
+
+/**
+ * Side-channel hooks for a single run. They let the MCP layer surface live
+ * progress (so clients don't sit on a silent, possibly-timing-out request) and
+ * cancel the underlying Cursor run when the client aborts the tool call.
+ */
+export interface RunHooks {
+  /** Aborts the underlying Cursor run when the MCP request is cancelled. */
+  signal?: AbortSignal;
+  /** Called for each streamed step while the agent is working. */
+  onProgress?: (event: RunProgressEvent) => void;
+}
 
 export type { SettingSource };
 
@@ -113,9 +136,9 @@ export interface WhoAmI {
 export interface CursorService {
   whoami(): Promise<WhoAmI>;
   listModels(): Promise<ModelInfo[]>;
-  runLocalAgent(params: RunLocalAgentParams): Promise<AgentRunResult>;
-  runCloudAgent(params: RunCloudAgentParams): Promise<AgentRunResult>;
-  followUp(params: FollowUpParams): Promise<AgentRunResult>;
+  runLocalAgent(params: RunLocalAgentParams, hooks?: RunHooks): Promise<AgentRunResult>;
+  runCloudAgent(params: RunCloudAgentParams, hooks?: RunHooks): Promise<AgentRunResult>;
+  followUp(params: FollowUpParams, hooks?: RunHooks): Promise<AgentRunResult>;
   getAgent(params: QueryRunParams): Promise<unknown>;
   listRuns(params: QueryRunParams): Promise<unknown>;
   getRun(params: QueryRunParams): Promise<unknown>;
@@ -145,6 +168,96 @@ async function disposeAgent(agent: {
     return;
   }
   agent.close?.();
+}
+
+/** Truncates long single-line strings so progress messages stay compact. */
+function clip(text: string, max = 160): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
+
+/**
+ * Summarizes an "instantaneous" {@link SDKMessage} (anything other than the
+ * incrementally-streamed assistant text) into a short progress line. Assistant
+ * text is intentionally not handled here — it arrives one token per message and
+ * is coalesced by {@link ProgressReducer} instead. Returns `undefined` when the
+ * message has nothing useful to show.
+ */
+export function summarizeSdkMessage(message: SDKMessage): RunProgressEvent | undefined {
+  switch (message.type) {
+    case "system": {
+      const model = message.model?.id ? ` (model ${message.model.id})` : "";
+      return { type: message.type, message: `Agent initialized${model}.` };
+    }
+    case "tool_call": {
+      return { type: message.type, message: `tool ${message.name}: ${message.status}` };
+    }
+    case "thinking": {
+      return { type: message.type, message: "thinking…" };
+    }
+    case "status": {
+      const detail = message.message ? `: ${clip(message.message)}` : "";
+      return { type: message.type, message: `status ${message.status}${detail}` };
+    }
+    case "task": {
+      const text = message.text ? clip(message.text) : (message.status ?? "");
+      if (!text) return undefined;
+      return { type: message.type, message: `task: ${text}` };
+    }
+    default:
+      return undefined;
+  }
+}
+
+const SENTENCE_END = /[.!?。！？\n]["'”’)）]?\s*$/;
+
+/**
+ * Coalesces the fine-grained SDK message stream into meaningful progress lines.
+ *
+ * The raw stream emits one assistant message per token and repeats `thinking`,
+ * which is far too noisy to forward verbatim. This reducer instead:
+ * - buffers assistant text and flushes it as one line on a sentence boundary,
+ *   on any non-assistant event, or at the end of the run;
+ * - forwards tool calls and status changes immediately (the useful "actions");
+ * - drops consecutive duplicate lines (e.g. repeated `thinking…`).
+ */
+export class ProgressReducer {
+  private assistantBuffer = "";
+  private lastLine?: string;
+
+  constructor(private readonly emit: (event: RunProgressEvent) => void) {}
+
+  push(message: SDKMessage): void {
+    if (message.type === "assistant") {
+      for (const block of message.message.content) {
+        if (block.type === "text") this.assistantBuffer += block.text;
+      }
+      if (SENTENCE_END.test(this.assistantBuffer)) this.flushAssistant();
+      return;
+    }
+    // Any non-assistant event is a boundary: emit buffered narration first so
+    // lines stay in the order the user would read them.
+    this.flushAssistant();
+    const event = summarizeSdkMessage(message);
+    if (event) this.line(event.type, event.message);
+  }
+
+  /** Flushes any buffered assistant text. Call once after the stream ends. */
+  end(): void {
+    this.flushAssistant();
+  }
+
+  private flushAssistant(): void {
+    const text = clip(this.assistantBuffer);
+    this.assistantBuffer = "";
+    if (text) this.line("assistant", text);
+  }
+
+  private line(type: RunProgressEvent["type"], message: string): void {
+    if (message === this.lastLine) return;
+    this.lastLine = message;
+    this.emit({ type, message });
+  }
 }
 
 export class CursorSdkService implements CursorService {
@@ -208,6 +321,47 @@ export class CursorSdkService implements CursorService {
     );
   }
 
+  /**
+   * Drives a run to completion: streams progress (when the run supports it),
+   * wires cancellation to the request's abort signal, and returns the final
+   * normalized result. Streaming is best-effort — failures there never mask the
+   * authoritative result from `run.wait()`.
+   */
+  private async driveRun(agentId: string, run: Run, hooks?: RunHooks): Promise<AgentRunResult> {
+    const removeAbort = this.wireAbort(run, hooks?.signal);
+    try {
+      if (hooks?.onProgress && run.supports("stream")) {
+        const reducer = new ProgressReducer(hooks.onProgress);
+        try {
+          for await (const message of run.stream()) {
+            reducer.push(message);
+          }
+        } catch {
+          // Streaming is advisory; fall through to wait() for the real result.
+        } finally {
+          reducer.end();
+        }
+      }
+      const result = await run.wait();
+      return this.formatRun(agentId, result);
+    } finally {
+      removeAbort();
+    }
+  }
+
+  private wireAbort(run: Run, signal?: AbortSignal): () => void {
+    if (!signal) return () => {};
+    if (signal.aborted) {
+      void run.cancel().catch(() => {});
+      return () => {};
+    }
+    const onAbort = (): void => {
+      void run.cancel().catch(() => {});
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    return () => signal.removeEventListener("abort", onAbort);
+  }
+
   private formatRun(agentId: string, result: RunResult): AgentRunResult {
     return {
       agentId,
@@ -234,7 +388,7 @@ export class CursorSdkService implements CursorService {
     };
   }
 
-  async runLocalAgent(params: RunLocalAgentParams): Promise<AgentRunResult> {
+  async runLocalAgent(params: RunLocalAgentParams, hooks?: RunHooks): Promise<AgentRunResult> {
     const apiKey = this.requireApiKey();
     const agent = await Agent.create({
       apiKey,
@@ -252,14 +406,13 @@ export class CursorSdkService implements CursorService {
     });
     try {
       const run = await agent.send(params.prompt);
-      const result = await run.wait();
-      return this.formatRun(agent.agentId, result);
+      return await this.driveRun(agent.agentId, run, hooks);
     } finally {
       await disposeAgent(agent);
     }
   }
 
-  async runCloudAgent(params: RunCloudAgentParams): Promise<AgentRunResult> {
+  async runCloudAgent(params: RunCloudAgentParams, hooks?: RunHooks): Promise<AgentRunResult> {
     const apiKey = this.requireApiKey();
     const agent = await Agent.create({
       apiKey,
@@ -280,22 +433,20 @@ export class CursorSdkService implements CursorService {
     });
     try {
       const run = await agent.send(params.prompt);
-      const result = await run.wait();
-      return this.formatRun(agent.agentId, result);
+      return await this.driveRun(agent.agentId, run, hooks);
     } finally {
       await disposeAgent(agent);
     }
   }
 
-  async followUp(params: FollowUpParams): Promise<AgentRunResult> {
+  async followUp(params: FollowUpParams, hooks?: RunHooks): Promise<AgentRunResult> {
     const agent = await Agent.resume(params.agentId, this.resumeOptions(params));
     try {
       const run = await agent.send(
         params.prompt,
         params.model ? { model: { id: params.model } } : undefined,
       );
-      const result = await run.wait();
-      return this.formatRun(agent.agentId, result);
+      return await this.driveRun(agent.agentId, run, hooks);
     } finally {
       await disposeAgent(agent);
     }

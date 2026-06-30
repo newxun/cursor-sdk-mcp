@@ -13,11 +13,13 @@ import type {
   FollowUpParams,
   QueryRunParams,
   RunCloudAgentParams,
+  RunHooks,
   RunLocalAgentParams,
+  RunProgressEvent,
   ModelInfo,
   WhoAmI,
 } from "../src/cursor.js";
-import { CursorSdkService } from "../src/cursor.js";
+import { CursorSdkService, ProgressReducer } from "../src/cursor.js";
 import { createServer } from "../src/server.js";
 
 class FakeCursorService implements CursorService {
@@ -53,18 +55,26 @@ class FakeCursorService implements CursorService {
     ];
   }
 
-  async runLocalAgent(params: RunLocalAgentParams): Promise<AgentRunResult> {
+  private emitProgress(hooks?: RunHooks): void {
+    hooks?.onProgress?.({ type: "assistant", message: "working on it" });
+    hooks?.onProgress?.({ type: "tool_call", message: "tool shell: completed" });
+  }
+
+  async runLocalAgent(params: RunLocalAgentParams, hooks?: RunHooks): Promise<AgentRunResult> {
     this.calls.push({ method: "runLocalAgent", params });
+    this.emitProgress(hooks);
     return { ...this.localRun, result: `Local: ${params.prompt}`, model: params.model ?? "auto" };
   }
 
-  async runCloudAgent(params: RunCloudAgentParams): Promise<AgentRunResult> {
+  async runCloudAgent(params: RunCloudAgentParams, hooks?: RunHooks): Promise<AgentRunResult> {
     this.calls.push({ method: "runCloudAgent", params });
+    this.emitProgress(hooks);
     return { ...this.cloudRun, result: `Cloud: ${params.prompt}`, model: params.model ?? "auto" };
   }
 
-  async followUp(params: FollowUpParams): Promise<AgentRunResult> {
+  async followUp(params: FollowUpParams, hooks?: RunHooks): Promise<AgentRunResult> {
     this.calls.push({ method: "followUp", params });
+    this.emitProgress(hooks);
     return {
       agentId: params.agentId,
       status: "finished",
@@ -214,6 +224,24 @@ test("cursor_run_agent forwards args and returns the run result", async () => {
     model: "composer-2.5",
     mode: undefined,
   });
+  await client.close();
+});
+
+test("cursor_run_agent streams progress notifications when the client opts in", async () => {
+  const client = await connect(new FakeCursorService());
+  const events: Array<{ progress: number; message?: string }> = [];
+  const res = await client.callTool(
+    { name: "cursor_run_agent", arguments: { prompt: "Do work", cwd: "/tmp/work" } },
+    undefined,
+    { onprogress: (p) => events.push(p) },
+  );
+
+  assert.equal(res.isError ?? false, false);
+  assert.ok(events.length >= 2, `expected progress notifications, got ${events.length}`);
+  assert.match(events[0].message ?? "", /working on it/);
+  assert.match(events[1].message ?? "", /tool shell/);
+  // Progress counters must be monotonically increasing.
+  assert.ok(events[1].progress > events[0].progress);
   await client.close();
 });
 
@@ -583,6 +611,94 @@ test("artifact tools forward local cwd for local agents", async () => {
     },
   ]);
   await client.close();
+});
+
+test("ProgressReducer coalesces token-level text and drops duplicate lines", () => {
+  const events: RunProgressEvent[] = [];
+  const reducer = new ProgressReducer((event) => events.push(event));
+  const assistant = (text: string) =>
+    ({
+      type: "assistant",
+      agent_id: "a",
+      run_id: "r",
+      message: { role: "assistant", content: [{ type: "text", text }] },
+    }) as never;
+  const tool = (status: string) =>
+    ({ type: "tool_call", agent_id: "a", run_id: "r", call_id: "c", name: "edit", status }) as never;
+  const thinking = () => ({ type: "thinking", agent_id: "a", run_id: "r", text: "" }) as never;
+
+  reducer.push({ type: "system", agent_id: "a", run_id: "r" } as never);
+  // Token-by-token narration with no sentence terminator yet.
+  for (const token of ["正在", "创建 ", "hello.txt"]) reducer.push(assistant(token));
+  // A tool call is a boundary: buffered narration flushes as one line first.
+  reducer.push(tool("running"));
+  reducer.push(tool("running")); // duplicate -> dropped
+  reducer.push(tool("completed"));
+  reducer.push(thinking());
+  reducer.push(thinking()); // duplicate -> dropped
+  reducer.push(assistant("完成了。")); // sentence terminator -> flushes immediately
+  reducer.end();
+
+  assert.deepEqual(
+    events.map((event) => event.message),
+    [
+      "Agent initialized.",
+      "正在创建 hello.txt",
+      "tool edit: running",
+      "tool edit: completed",
+      "thinking…",
+      "完成了。",
+    ],
+  );
+});
+
+test("CursorSdkService streams progress and cancels the run on abort", async (t) => {
+  let cancelled = false;
+  let releaseStream: () => void = () => {};
+  const streamGate = new Promise<void>((resolve) => {
+    releaseStream = resolve;
+  });
+  const fakeRun = {
+    agentId: "agent-local-test",
+    supports: () => true,
+    unsupportedReason: () => undefined,
+    stream: async function* () {
+      yield { type: "system", agent_id: "a", run_id: "r" } as never;
+      yield { type: "thinking", agent_id: "a", run_id: "r", text: "" } as never;
+      await streamGate;
+    },
+    wait: async () => ({ id: "run-1", status: "cancelled", result: "" }),
+    cancel: async () => {
+      cancelled = true;
+      releaseStream();
+    },
+    conversation: async () => [],
+    onDidChangeStatus: () => () => {},
+  };
+  const fakeAgent = {
+    agentId: "agent-local-test",
+    send: async () => fakeRun,
+    close: () => {},
+    [Symbol.asyncDispose]: async () => {},
+  };
+  t.mock.method(Agent, "create", async () => fakeAgent as Awaited<ReturnType<typeof Agent.create>>);
+
+  const controller = new AbortController();
+  const events: RunProgressEvent[] = [];
+  const service = new CursorSdkService({ apiKey: "test-key" });
+  const runPromise = service.runLocalAgent(
+    { prompt: "do work", cwd: "/tmp/work" },
+    { signal: controller.signal, onProgress: (event) => events.push(event) },
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  controller.abort();
+  const result = await runPromise;
+
+  assert.equal(cancelled, true);
+  assert.equal(result.status, "cancelled");
+  assert.ok(events.some((event) => event.type === "system"));
+  assert.equal(events.some((event) => event.type === "thinking"), true);
 });
 
 test("CursorSdkService passes local cwd to resume-based SDK operations", async (t) => {

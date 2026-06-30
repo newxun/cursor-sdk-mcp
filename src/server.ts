@@ -5,11 +5,56 @@
  * same registration code is exercised by integration tests with a fake backend.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
+import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
+import type {
+  CallToolResult,
+  ServerNotification,
+  ServerRequest,
+} from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import type { AgentRunResult, CursorService, QueryRunParams } from "./cursor.js";
+import type {
+  AgentRunResult,
+  CursorService,
+  QueryRunParams,
+  RunHooks,
+} from "./cursor.js";
 import { describeError } from "./errors.js";
+
+type ToolExtra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+
+/**
+ * Builds per-run hooks from the MCP request context so long agent runs feel
+ * responsive: stream steps back as `notifications/progress` (only when the
+ * client opted in with a progressToken) and forward request cancellation to the
+ * underlying Cursor run via the abort signal.
+ */
+function runHooksFrom(extra: ToolExtra): RunHooks {
+  const signal = extra.signal;
+  const progressToken = extra._meta?.progressToken;
+  if (progressToken === undefined) {
+    return { signal };
+  }
+  let progress = 0;
+  return {
+    signal,
+    onProgress: (event) => {
+      progress += 1;
+      void extra
+        .sendNotification({
+          method: "notifications/progress",
+          params: {
+            progressToken,
+            progress,
+            message: `[${event.type}] ${event.message}`,
+          },
+        })
+        .catch(() => {
+          // A dropped progress notification must never fail the run.
+        });
+    },
+  };
+}
 
 export interface ServerInfo {
   name: string;
@@ -275,9 +320,11 @@ export function createServer(
       },
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },
-    async ({ prompt, cwd, model, mode }) => {
+    async ({ prompt, cwd, model, mode }, extra) => {
       try {
-        return formatRun(await service.runLocalAgent({ prompt, cwd, model, mode }));
+        return formatRun(
+          await service.runLocalAgent({ prompt, cwd, model, mode }, runHooksFrom(extra)),
+        );
       } catch (error) {
         return errorResult(error);
       }
@@ -293,9 +340,9 @@ export function createServer(
       inputSchema: localAgentInputSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },
-    async (params) => {
+    async (params, extra) => {
       try {
-        return formatRun(await service.runLocalAgent(params));
+        return formatRun(await service.runLocalAgent(params, runHooksFrom(extra)));
       } catch (error) {
         return errorResult(error);
       }
@@ -311,10 +358,10 @@ export function createServer(
       inputSchema: cloudAgentInputSchema,
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },
-    async (params) => {
+    async (params, extra) => {
       try {
         assertNoCloudMcpCwd(params.mcpServers, params.agents);
-        return formatRun(await service.runCloudAgent(params));
+        return formatRun(await service.runCloudAgent(params, runHooksFrom(extra)));
       } catch (error) {
         return errorResult(error);
       }
@@ -344,10 +391,15 @@ export function createServer(
       },
       annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     },
-    async ({ agentId, prompt, model, runtime, cwd }) => {
+    async ({ agentId, prompt, model, runtime, cwd }, extra) => {
       try {
         const { runtime: resolvedRuntime } = queryParams({ agentId, runtime, cwd });
-        return formatRun(await service.followUp({ agentId, prompt, model, runtime: resolvedRuntime, cwd }));
+        return formatRun(
+          await service.followUp(
+            { agentId, prompt, model, runtime: resolvedRuntime, cwd },
+            runHooksFrom(extra),
+          ),
+        );
       } catch (error) {
         return errorResult(error);
       }
