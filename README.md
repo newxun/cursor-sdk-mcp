@@ -95,6 +95,23 @@ also pass inline `mcpServers`, `agents`, and `sandboxOptions` for one-off tool w
 For local `cursor_follow_up`, lifecycle, and artifact calls, pass the same `cwd` used to create the
 agent so the SDK can find persisted local agent state.
 
+## Live progress and cancellation
+
+`cursor_run_agent`, `cursor_run_local_agent`, `cursor_run_cloud_agent`, and `cursor_follow_up` run to
+completion in a single tool call. Because a real coding run can take minutes, the server keeps the
+call responsive:
+
+- **Progress streaming.** When the MCP client sends a `progressToken` with the request (most clients
+  do this automatically when you register a progress callback), the server streams each agent
+  step — assistant text, tool calls, status changes — back as `notifications/progress`. Clients that
+  reset their request timeout on progress (set `resetTimeoutOnProgress`) won't time out on long runs,
+  and the user sees what the agent is doing instead of a silent wait.
+- **Cancellation.** If the client cancels the tool call (its `AbortSignal` fires), the server cancels
+  the underlying Cursor run, so you stop paying for work you no longer need.
+
+Progress streaming is best-effort: if a client doesn't request progress, or the runtime doesn't
+support streaming, the tool still returns the same final result.
+
 ## Cloud agent usage
 
 Use `cursor_run_cloud_agent` when the agent should run in Cursor Cloud:
